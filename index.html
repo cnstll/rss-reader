@@ -471,6 +471,7 @@
    ÉTAT GLOBAL
    ===================================================== */
 const LS_KEY = "radar-rss-state-v1";
+const LS_CACHE_KEY = "radar-rss-articles-cache-v1";
 
 const CATEGORIES = [
   {
@@ -560,6 +561,34 @@ function defaultFeeds() {
     for (const f of c.feeds)
       out.push({ cat: c.id, name: f.name, url: f.url });
   return out;
+}
+
+/* =====================================================
+   CACHE LOCAL DES ARTICLES
+   La liste survit au rechargement de page, même si le
+   réseau ou le proxy est indisponible au moment du load.
+   ===================================================== */
+function saveArticlesCache(items) {
+  try {
+    // on limite la taille : 600 articles max, HTML tronqué à 8 Ko
+    const slim = items.slice(0, 600).map(a => ({
+      ...a,
+      html: a.html ? a.html.slice(0, 8000) : a.html,
+      date: a.date.toISOString()
+    }));
+    localStorage.setItem(LS_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), items: slim }));
+  } catch (e) { /* quota localStorage dépassé : le cache est optionnel, on ignore */ }
+}
+function loadArticlesCache() {
+  try {
+    const raw = localStorage.getItem(LS_CACHE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items) || !parsed.items.length) return false;
+    articles = parsed.items.map(a => ({ ...a, date: new Date(a.date) }));
+    state.demoMode = false;
+    return true;
+  } catch (e) { return false; }
 }
 
 /* =====================================================
@@ -692,13 +721,21 @@ async function refreshAll() {
   });
 
   if (allFailed) {
-    state.demoMode = true;
-    articles = demoArticles().map(a => ({ ...a, key: "demo:" + a.key }));
-    showBanner(
-      "<b>Mode démo.</b> Impossible d'accéder au réseau depuis cet aperçu (CSP du sandbox). " +
-      "Les données affichées sont un échantillon embarqué — dont les vrais numéros de <i>The Morning Backscatter</i>. " +
-      "Téléchargez ce fichier HTML et ouvrez-le dans votre navigateur : les vrais flux seront chargés."
-    );
+    if (!state.demoMode && articles.length) {
+      // on garde le cache local affiché et on signale l'échec réseau
+      showBanner(
+        "<b>⚠ Rafraîchissement impossible.</b> Le réseau ou le proxy CORS est indisponible — " +
+        "les articles affichés proviennent du cache local de votre dernière consultation réussie."
+      );
+    } else {
+      state.demoMode = true;
+      articles = demoArticles().map(a => ({ ...a, key: "demo:" + a.key }));
+      showBanner(
+        "<b>Mode démo.</b> Impossible d'accéder au réseau depuis cet aperçu (CSP du sandbox). " +
+        "Les données affichées sont un échantillon embarqué — dont les vrais numéros de <i>The Morning Backscatter</i>. " +
+        "Téléchargez ce fichier HTML et ouvrez-le dans votre navigateur : les vrais flux seront chargés."
+      );
+    }
   } else {
     state.demoMode = false;
     // déduplication par clé (guid), on garde le plus récent
@@ -707,6 +744,7 @@ async function refreshAll() {
       if (!map.has(a.key) || map.get(a.key).date < a.date) map.set(a.key, a);
     }
     articles = [...map.values()].sort((a, b) => b.date - a.date);
+    saveArticlesCache(articles);
     const errs = feeds.filter(f => f.error).length;
     if (errs) showBanner(`<b>${errs} flux en erreur.</b> Causes fréquentes : URL invalide, flux indisponible, ou CORS bloqué — vérifiez que le proxy est activé en bas de la colonne de gauche.`);
   }
@@ -1095,9 +1133,10 @@ mqMobile.addEventListener("change", e => {
    ===================================================== */
 load();
 document.getElementById("proxy").checked = state.useProxy;
+loadArticlesCache(); // affichage immédiat du cache, s'il existe
 renderAll();
 renderFilters();
-refreshAll();
+refreshAll(); // puis rafraîchissement réseau en arrière-plan
 </script>
 </body>
 </html>
