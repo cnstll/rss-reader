@@ -647,21 +647,49 @@ function loadArticlesCache() {
 /* =====================================================
    FETCH + PARSING RSS 2.0 / ATOM
    ===================================================== */
-function proxify(url) {
-  return state.useProxy
-    ? "https://api.allorigins.win/raw?url=" + encodeURIComponent(url)
-    : url;
+/* Chaîne de proxies avec bascule automatique : chaque proxy est essayé
+   dans l'ordre jusqu'à obtention d'une réponse valide. La requête directe
+   est le dernier recours (ne fonctionne que si le flux envoie les en-têtes
+   CORS). Timeout de 20 s par tentative pour éviter les requêtes pendantes. */
+const PROXY_CHAIN = [
+  { kind: "raw", build: u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) },
+  { kind: "raw", build: u => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u) },
+  { kind: "json", build: u => "https://api.allorigins.win/get?url=" + encodeURIComponent(u) }
+];
+
+function candidatesFor(url) {
+  if (!state.useProxy) return [{ kind: "direct", url }];
+  return [
+    ...PROXY_CHAIN.map(p => ({ kind: p.kind, url: p.build(url) })),
+    { kind: "direct", url }
+  ];
 }
 
 async function fetchFeed(feed) {
-  const res = await fetch(proxify(feed.url), { redirect: "follow" });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const text = await res.text();
-  const doc = new DOMParser().parseFromString(text, "application/xml");
-  if (doc.querySelector("parsererror")) throw new Error("XML invalide");
-  const items = parseFeed(doc);
-  if (!items.length) throw new Error("Aucun item");
-  return items;
+  const errors = [];
+  for (const c of candidatesFor(feed.url)) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const res = await fetch(c.url, { redirect: "follow", signal: ctrl.signal });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      let text = await res.text();
+      if (c.kind === "json") {
+        try { text = (JSON.parse(text) || {}).contents || ""; } catch (e) { throw new Error("JSON illisible"); }
+      }
+      if (!text || text.length < 20) throw new Error("réponse vide");
+      const doc = new DOMParser().parseFromString(text, "application/xml");
+      if (doc.querySelector("parsererror")) throw new Error("XML invalide");
+      const items = parseFeed(doc);
+      if (!items.length) throw new Error("Aucun item");
+      return items;
+    } catch (e) {
+      errors.push(String((e && e.message) || e));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(errors.join(" | "));
 }
 
 function txt(el) { return el ? (el.textContent || "").trim() : ""; }
@@ -777,8 +805,9 @@ async function refreshAll() {
     if (!state.demoMode && articles.length) {
       // on garde le cache local affiché et on signale l'échec réseau
       showBanner(
-        "<b>⚠ Rafraîchissement impossible.</b> Le réseau ou le proxy CORS est indisponible — " +
-        "les articles affichés proviennent du cache local de votre dernière consultation réussie."
+        "<b>⚠ Rafraîchissement impossible.</b> Le réseau et tous les proxies CORS de secours sont indisponibles — " +
+        "les articles affichés proviennent du cache local de votre dernière consultation réussie. " +
+        "Réessayez avec « ⟳ Rafraîchir » : le premier proxy (AllOrigins) subit parfois des pannes passagères."
       );
     } else {
       state.demoMode = true;
