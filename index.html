@@ -678,6 +678,10 @@ async function fetchFeed(feed) {
         try { text = (JSON.parse(text) || {}).contents || ""; } catch (e) { throw new Error("JSON illisible"); }
       }
       if (!text || text.length < 20) throw new Error("réponse vide");
+      const trimmed = text.replace(/^\uFEFF/, "").trim();
+      if (/^<!doctype html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+        throw new Error("réponse HTML au lieu du flux (protection anti-robot sur le site source, ou URL incorrecte)");
+      }
       const doc = new DOMParser().parseFromString(text, "application/xml");
       if (doc.querySelector("parsererror")) throw new Error("XML invalide");
       const items = parseFeed(doc);
@@ -874,7 +878,7 @@ function renderNav() {
         <span class="count">${unreadByCat[c.id] || 0}</span>
       </div>
       ${feeds.map(f => `
-        <div class="feed ${state.selectedFeedUrl === f.url ? "active" : ""}" data-feed="${f.url}" title="${f.url}">
+        <div class="feed ${state.selectedFeedUrl === f.url ? "active" : ""}" data-feed="${f.url}" title="${f.error ? escapeHtml("Erreur : " + f.error) : f.url}">
           <span class="status">${f.error ? '<span class="err-dot">⚠</span>' : ""}</span>
           <span class="name">${escapeHtml(f.name)}</span>
           <span style="font-size:10px;color:var(--muted)">${unreadByFeed[f.url] || ""}</span>
